@@ -1,6 +1,8 @@
 import re
 import tldextract
 import os
+import whois
+from datetime import datetime
 
 
 # Suspicious words often used in scam domains
@@ -68,6 +70,32 @@ def jaccard_similarity(text1, text2):
     return len(intersection) / len(union)
 
 
+
+
+# Check domain age
+def get_domain_age(domain):
+
+    try:
+        domain_info = whois.whois(domain)
+
+        creation_date = domain_info.creation_date
+
+        if isinstance(creation_date, list):
+            creation_date = creation_date[0]
+
+        if creation_date is None:
+            return None
+
+        today = datetime.now()
+
+        age_days = (today - creation_date).days
+
+        return age_days
+
+    except:
+        return None
+
+
 # ----------------------------
 # Main detection function
 # ----------------------------
@@ -119,6 +147,14 @@ def analyze_message(message):
 
         domain = domain_info.domain
         suffix = domain_info.suffix
+
+        domain_name = domain + "." + suffix
+
+        age = get_domain_age(domain_name)
+
+        if age is not None and age < 30:
+            score += 40
+            reasons.append("Domain is very new (less than 30 days old): " + domain_name)
 
         full_domain = domain + "." + suffix
         reasons.append("Detected domain: " + full_domain)
