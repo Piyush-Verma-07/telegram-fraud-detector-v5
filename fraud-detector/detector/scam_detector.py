@@ -11,6 +11,27 @@ suspicious_domain_words = [
     "gift", "bank", "wallet", "upi", "pay"
 ]
 
+
+# Popular brands commonly targeted by phishing
+target_brands = [
+    "google",
+    "amazon",
+    "paypal",
+    "apple",
+    "facebook",
+    "instagram",
+    "whatsapp",
+    "paytm",
+    "phonepe",
+    "gpay",
+    "upi",
+    "sbi",
+    "hdfc",
+    "icici",
+    "axis"
+]
+
+
 # Short URL services
 short_url_services = [
     "bit.ly", "tinyurl.com", "t.co", "goo.gl", "cutt.ly", "is.gd"
@@ -150,6 +171,12 @@ def analyze_message(message):
 
         domain_name = domain + "." + suffix
 
+        # Brand impersonation detection
+        for brand in target_brands:
+            if brand in domain.lower():
+                score += 35
+                reasons.append("Possible brand impersonation detected: " + brand)
+
         age = get_domain_age(domain_name)
 
         if age is not None and age < 30:
@@ -175,6 +202,34 @@ def analyze_message(message):
             if word in url:
                 score += 25
                 reasons.append("Suspicious word in URL: " + word)
+
+
+        # Detect IP address URLs
+        ip_pattern = r'http[s]?://\d+\.\d+\.\d+\.\d+'
+
+        if re.match(ip_pattern, url):
+            score += 40
+            reasons.append("URL uses IP address instead of domain")
+
+
+        # Detect excessive hyphens
+        if domain.count("-") >= 3:
+            score += 30
+            reasons.append("Domain contains excessive hyphens (possible phishing)")
+
+
+        # Detect very long domains
+        if len(domain) > 25:
+            score += 25
+            reasons.append("Domain name unusually long")
+
+        # Detect suspicious subdomain tricks
+        if domain_info.subdomain:
+            if any(brand in domain_info.subdomain for brand in target_brands):
+                score += 35
+                reasons.append("Brand name used in subdomain (possible phishing)")
+
+
 
     # Cap score
     if score > 100:
