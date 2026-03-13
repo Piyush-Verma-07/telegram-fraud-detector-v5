@@ -2,7 +2,15 @@ import re
 import tldextract
 import os
 import whois
+import joblib
 from datetime import datetime
+
+# Load trained ML phishing model
+# Load ML model using absolute project path
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+model_path = os.path.join(base_dir, "phishing_model.pkl")
+
+model = joblib.load(model_path)
 
 
 # Suspicious words often used in scam domains
@@ -117,6 +125,24 @@ def get_domain_age(domain):
         return None
 
 
+
+
+def ml_detect(url):
+
+    features = [
+        len(url),
+        url.count("-"),
+        url.count("."),
+        int("https" in url),
+        int(re.search(r'\d+\.\d+\.\d+\.\d+', url) is not None)
+    ]
+
+    prediction = model.predict([features])
+
+    return prediction[0]
+
+
+
 # ----------------------------
 # Main detection function
 # ----------------------------
@@ -228,6 +254,17 @@ def analyze_message(message):
             if any(brand in domain_info.subdomain for brand in target_brands):
                 score += 35
                 reasons.append("Brand name used in subdomain (possible phishing)")
+
+
+        # Machine learning phishing detection
+        ml_result = ml_detect(url)
+        
+        if ml_result == 1:
+            score += 40
+            reasons.append("Machine learning model detected phishing URL")
+
+
+
 
 
 
