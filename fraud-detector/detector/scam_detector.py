@@ -1,8 +1,10 @@
 import re
+import requests
 import tldextract
 import os
 import whois
 import joblib
+import dns.resolver
 from datetime import datetime
 
 # Load trained ML phishing model
@@ -37,6 +39,23 @@ target_brands = [
     "hdfc",
     "icici",
     "axis"
+]
+
+
+
+
+# Popular trusted domains
+popular_domains = [
+    "google.com",
+    "youtube.com",
+    "facebook.com",
+    "amazon.com",
+    "amazon.in",
+    "microsoft.com",
+    "apple.com",
+    "github.com",
+    "linkedin.com",
+    "wikipedia.org"
 ]
 
 
@@ -143,6 +162,60 @@ def ml_detect(url):
 
 
 
+
+import math
+from collections import Counter
+
+def calculate_entropy(text):
+
+    counter = Counter(text)
+
+    length = len(text)
+
+    entropy = 0
+
+    for count in counter.values():
+        probability = count / length
+        entropy -= probability * math.log2(probability)
+
+    return entropy
+
+
+
+
+
+
+
+
+def levenshtein_distance(a, b):
+
+    if len(a) < len(b):
+        return levenshtein_distance(b, a)
+
+    if len(b) == 0:
+        return len(a)
+
+    previous_row = range(len(b) + 1)
+
+    for i, c1 in enumerate(a):
+
+        current_row = [i + 1]
+
+        for j, c2 in enumerate(b):
+
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+
+            current_row.append(min(insertions, deletions, substitutions))
+
+        previous_row = current_row
+
+    return previous_row[-1]
+
+
+
+
 # ----------------------------
 # Main detection function
 # ----------------------------
@@ -195,7 +268,35 @@ def analyze_message(message):
         domain = domain_info.domain
         suffix = domain_info.suffix
 
+        # Domain entropy detection
+        entropy = calculate_entropy(domain)
+        if entropy > 3.5:
+            score += 30
+            reasons.append("Domain has high entropy (random-looking domain)")
+    
+
+
+        
+
+
+
+        # Punycode detection (homograph attack)
+        if domain.startswith("xn--"):
+            score += 40
+            reasons.append("Punycode domain detected (possible homograph attack)")
+
+        
+
         domain_name = domain + "." + suffix
+
+
+
+        # Domain popularity check
+        if domain_name not in popular_domains:
+            score += 10
+            reasons.append("Domain not in popular domain list")
+
+
 
         # Brand impersonation detection
         for brand in target_brands:
@@ -211,6 +312,35 @@ def analyze_message(message):
 
         full_domain = domain + "." + suffix
         reasons.append("Detected domain: " + full_domain)
+
+
+
+
+
+        # Levenshtein brand similarity detection
+        # Levenshtein brand similarity detection
+
+        domain_parts = domain.split("-")
+        for part in domain_parts:
+            for brand in target_brands:
+                distance = levenshtein_distance(part.lower(), brand)
+                if distance > 0 and distance <= 2:
+                    score += 35
+                    reasons.append("Domain very similar to brand (possible typosquatting): " + brand)
+                    break
+
+
+
+        # Digit ratio detection
+        digit_count = sum(c.isdigit() for c in domain)
+
+        digit_ratio = digit_count / len(domain)
+        if digit_ratio > 0.3:
+            score += 25
+            reasons.append("Domain contains many digits (possible phishing)")
+        
+
+
 
         # Suspicious TLD detection
         if suffix in suspicious_tlds:
@@ -256,12 +386,76 @@ def analyze_message(message):
                 reasons.append("Brand name used in subdomain (possible phishing)")
 
 
+
+        # URL encoding detection
+        if re.search(r'%[0-9a-fA-F]{2}', url):
+            score += 30
+            reasons.append("Encoded characters detected in URL (possible obfuscation)")
+
+
+
+
         # Machine learning phishing detection
         ml_result = ml_detect(url)
         
         if ml_result == 1:
             score += 40
             reasons.append("Machine learning model detected phishing URL")
+
+
+
+
+        # Subdomain depth detection
+        subdomain_parts = domain_info.subdomain.split(".")
+        if len(subdomain_parts) > 3:
+            score += 30
+            reasons.append("Too many subdomains detected (possible phishing)")
+
+
+        
+
+        # Redirect chain detection
+        try:
+            response = requests.get(url, allow_redirects=True, timeout=3)
+            redirect_count = len(response.history)
+            if redirect_count > 2:
+                score += 30
+                reasons.append("URL redirects multiple times (possible phishing)")
+        except:
+            pass
+
+
+
+
+        # URL parameter count detection
+        if "?" in url:
+            params = url.split("?")[1]
+            param_count = params.count("&") + 1
+            if param_count > 3:
+                score += 20
+                reasons.append("URL contains many query parameters")
+
+
+        
+
+        # DNS record analysis
+        try:
+            answers = dns.resolver.resolve(domain_name, "A")
+            if not answers:
+                score += 20
+                reasons.append("Domain has no A record")
+        except:
+            score += 25
+            reasons.append("DNS lookup failed for domain")
+
+
+
+
+        # Dot count detection
+        dot_count = url.count(".")
+        if dot_count > 5:
+            score += 20
+            reasons.append("URL contains excessive dots (possible phishing)")
 
 
 
