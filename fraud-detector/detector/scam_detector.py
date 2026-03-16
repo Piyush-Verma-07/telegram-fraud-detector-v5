@@ -2,91 +2,84 @@ import re
 import requests
 import tldextract
 import os
-import whois
 import joblib
 import dns.resolver
 from datetime import datetime
+import math
+from collections import Counter
 
+# ----------------------------
 # Load trained ML phishing model
-# Load ML model using absolute project path
+# ----------------------------
+
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_path = os.path.join(base_dir, "phishing_model.pkl")
-
 model = joblib.load(model_path)
 
+# ----------------------------
+# Suspicious domain words
+# ----------------------------
 
-# Suspicious words often used in scam domains
 suspicious_domain_words = [
-    "login", "verify", "secure", "bonus", "reward",
-    "gift", "bank", "wallet", "upi", "pay"
+    "login","verify","secure","bonus","reward",
+    "gift","bank","wallet","upi","pay"
 ]
 
+# ----------------------------
+# Target brands
+# ----------------------------
 
-# Popular brands commonly targeted by phishing
 target_brands = [
-    "google",
-    "amazon",
-    "paypal",
-    "apple",
-    "facebook",
-    "instagram",
-    "whatsapp",
-    "paytm",
-    "phonepe",
-    "gpay",
-    "upi",
-    "sbi",
-    "hdfc",
-    "icici",
-    "axis"
+    "google","amazon","paypal","apple","facebook",
+    "instagram","whatsapp","paytm","phonepe",
+    "gpay","upi","sbi","hdfc","icici","axis"
 ]
 
-
-
-
+# ----------------------------
 # Popular trusted domains
+# ----------------------------
+
 popular_domains = [
-    "google.com",
-    "youtube.com",
-    "facebook.com",
-    "amazon.com",
-    "amazon.in",
-    "microsoft.com",
-    "apple.com",
-    "github.com",
-    "linkedin.com",
-    "wikipedia.org"
+    "google.com","youtube.com","facebook.com","amazon.com",
+    "amazon.in","microsoft.com","apple.com",
+    "github.com","linkedin.com","wikipedia.org"
 ]
 
-
+# ----------------------------
 # Short URL services
+# ----------------------------
+
 short_url_services = [
-    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "cutt.ly", "is.gd"
+    "bit.ly","tinyurl.com","t.co","goo.gl","cutt.ly","is.gd"
 ]
 
-# Suspicious keywords in messages
+# ----------------------------
+# Suspicious keywords
+# ----------------------------
+
 suspicious_keywords = [
-    "lottery", "reward", "claim", "urgent", "verify", "otp", "win"
+    "lottery","reward","claim","urgent","verify","otp","win"
 ]
 
-# Suspicious domain extensions
+# ----------------------------
+# Suspicious TLDs
+# ----------------------------
+
 suspicious_tlds = [
-    "xyz", "top", "click", "site", "live", "gq", "cf", "ml"
+    "xyz","top","click","site","live","gq","cf","ml"
 ]
 
+# ----------------------------
+# Load scam patterns
+# ----------------------------
 
-# ----------------------------
-# Load scam message patterns
-# ----------------------------
 def load_scam_patterns():
 
     patterns = []
-
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    file_path = os.path.join(base_dir, "data", "scam_patterns.txt")
+    file_path = os.path.join(base_dir,"data","scam_patterns.txt")
 
     try:
-        with open(file_path, "r") as file:
+        with open(file_path,"r") as file:
             for line in file:
                 patterns.append(line.strip().lower())
     except:
@@ -94,45 +87,63 @@ def load_scam_patterns():
 
     return patterns
 
-
 scam_patterns = load_scam_patterns()
 
-
 # ----------------------------
-# Text similarity function
+# Jaccard similarity
 # ----------------------------
-def jaccard_similarity(text1, text2):
 
-    text1 = re.sub(r'[^\w\s]', '', text1)
-    text2 = re.sub(r'[^\w\s]', '', text2)
+def jaccard_similarity(text1,text2):
 
-    words1 = set(text1.split())
-    words2 = set(text2.split())
+    text1 = re.sub(r'[^\w\s]','',text1)
+    text2 = re.sub(r'[^\w\s]','',text2)
 
-    intersection = words1.intersection(words2)
-    union = words1.union(words2)
+    words1=set(text1.split())
+    words2=set(text2.split())
 
-    if len(union) == 0:
+    intersection=words1.intersection(words2)
+    union=words1.union(words2)
+
+    if len(union)==0:
         return 0
 
-    return len(intersection) / len(union)
+    return len(intersection)/len(union)
 
+# ----------------------------
+# Domain age using APILayer
+# ----------------------------
 
-
-
-# Check domain age
 def get_domain_age(domain):
 
+    API_KEY = "nOmMJNL00UiCQgHbPVn698GXNVce7otZ"
+
+    url = "https://api.apilayer.com/whois/query"
+
+    headers = {
+        "apikey": API_KEY
+    }
+
+    params = {
+        "domain": domain
+    }
+
     try:
-        domain_info = whois.whois(domain)
 
-        creation_date = domain_info.creation_date
+        response = requests.get(url, headers=headers, params=params, timeout=5)
 
-        if isinstance(creation_date, list):
-            creation_date = creation_date[0]
+        data = response.json()
 
-        if creation_date is None:
+        result = data.get("result")
+
+        if not result:
             return None
+
+        creation_date = result.get("creation_date")
+
+        if not creation_date:
+            return None
+
+        creation_date = datetime.strptime(creation_date[:10], "%Y-%m-%d")
 
         today = datetime.now()
 
@@ -143,8 +154,102 @@ def get_domain_age(domain):
     except:
         return None
 
+# ----------------------------
+# Domain entropy
+# ----------------------------
 
+def calculate_entropy(text):
 
+    counter=Counter(text)
+    length=len(text)
+
+    entropy=0
+
+    for count in counter.values():
+        probability=count/length
+        entropy-=probability*math.log2(probability)
+
+    return entropy
+
+# ----------------------------
+# Levenshtein distance
+# ----------------------------
+
+def levenshtein_distance(a,b):
+
+    if len(a)<len(b):
+        return levenshtein_distance(b,a)
+
+    if len(b)==0:
+        return len(a)
+
+    previous_row=range(len(b)+1)
+
+    for i,c1 in enumerate(a):
+
+        current_row=[i+1]
+
+        for j,c2 in enumerate(b):
+
+            insertions=previous_row[j+1]+1
+            deletions=current_row[j]+1
+            substitutions=previous_row[j]+(c1!=c2)
+
+            current_row.append(min(insertions,deletions,substitutions))
+
+        previous_row=current_row
+
+    return previous_row[-1]
+
+# ----------------------------
+# Resolve redirect URL
+# ----------------------------
+
+def resolve_final_url(url):
+
+    try:
+        response=requests.get(url,allow_redirects=True,timeout=5)
+        return response.url
+    except:
+        return url
+
+# ----------------------------
+# PhishTank API check
+# ----------------------------
+
+def check_phishtank(url):
+
+    api_url = "https://checkurl.phishtank.com/checkurl/"
+
+    payload = {
+        "url": url,
+        "format": "json"
+    }
+
+    headers = {
+        "User-Agent": "fraud-detector"
+    }
+
+    try:
+
+        response = requests.post(api_url, data=payload, headers=headers, timeout=5)
+        data = response.json()
+
+        if "results" in data:
+
+            result = data["results"]
+
+            if result.get("in_database") and result.get("verified"):
+                return True
+
+    except:
+        pass
+
+    return False
+
+# ----------------------------
+# ML phishing detection
+# ----------------------------
 
 def ml_detect(url):
 
@@ -163,307 +268,170 @@ def ml_detect(url):
 
 
 
-import math
-from collections import Counter
-
-def calculate_entropy(text):
-
-    counter = Counter(text)
-
-    length = len(text)
-
-    entropy = 0
-
-    for count in counter.values():
-        probability = count / length
-        entropy -= probability * math.log2(probability)
-
-    return entropy
 
 
 
 
+def check_google_safe_browsing(url):
+
+    API_KEY = "AIzaSyDkldRwcVa83tl5PJu-qqIOADeTSUhV4jk"
+
+    endpoint = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={API_KEY}"
+
+    payload = {
+        "client": {
+            "clientId": "fraud-detector",
+            "clientVersion": "1.0"
+        },
+        "threatInfo": {
+            "threatTypes": [
+                "MALWARE",
+                "SOCIAL_ENGINEERING",
+                "POTENTIALLY_HARMFUL_APPLICATION",
+                "UNWANTED_SOFTWARE"
+            ],
+            "platformTypes": ["ANY_PLATFORM"],
+            "threatEntryTypes": ["URL"],
+            "threatEntries": [{"url": url}]
+        }
+    }
+
+    try:
+
+        response = requests.post(endpoint, json=payload, timeout=5)
+
+        data = response.json()
+
+        print("Safe Browsing API Response:", data)  # DEBUG
+
+        if "matches" in data:
+            return True
+
+    except Exception as e:
+        print("Safe Browsing error:", e)
+
+    return False
 
 
 
-
-def levenshtein_distance(a, b):
-
-    if len(a) < len(b):
-        return levenshtein_distance(b, a)
-
-    if len(b) == 0:
-        return len(a)
-
-    previous_row = range(len(b) + 1)
-
-    for i, c1 in enumerate(a):
-
-        current_row = [i + 1]
-
-        for j, c2 in enumerate(b):
-
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-
-            current_row.append(min(insertions, deletions, substitutions))
-
-        previous_row = current_row
-
-    return previous_row[-1]
 
 
 
 
 # ----------------------------
-# Main detection function
+# MAIN DETECTION FUNCTION
 # ----------------------------
+
 def analyze_message(message):
 
-    score = 0
-    reasons = []
+    score=0
+    reasons=[]
 
-    text = message.lower()
+    text=message.lower()
 
     # Keyword detection
     for word in suspicious_keywords:
         if word in text:
-            score += 20
-            reasons.append("Suspicious keyword detected: " + word)
+            score+=20
+            reasons.append("Suspicious keyword detected: "+word)
 
     # Pattern detection
-    pattern_matched = False
+    pattern_matched=False
 
     for pattern in scam_patterns:
+
         if pattern in text:
-            score += 40
-            reasons.append("Matched known scam pattern: " + pattern)
-            pattern_matched = True
+            score+=40
+            reasons.append("Matched known scam pattern: "+pattern)
+            pattern_matched=True
             break
 
     # Similarity detection
     if not pattern_matched:
+
         for pattern in scam_patterns:
 
-            similarity = jaccard_similarity(text, pattern)
+            similarity=jaccard_similarity(text,pattern)
 
-            if similarity > 0.3:
-                score += 30
-                reasons.append("Message similar to scam pattern: " + pattern)
+            if similarity>0.3:
+                score+=30
+                reasons.append("Message similar to scam pattern: "+pattern)
                 break
 
-    # URL detection
-    urls = re.findall(r'https?://\S+', text)
+    # URL extraction
+    urls=re.findall(r'https?://\S+',text)
 
     if urls:
-        score += 20
+        score+=20
         reasons.append("Message contains external link")
 
     # URL analysis
     for url in urls:
 
-        domain_info = tldextract.extract(url)
-
-        domain = domain_info.domain
-        suffix = domain_info.suffix
-
-        # Domain entropy detection
-        entropy = calculate_entropy(domain)
-        if entropy > 3.5:
-            score += 30
-            reasons.append("Domain has high entropy (random-looking domain)")
-    
+        final_url=resolve_final_url(url)
 
 
-        
+        # Google Safe Browsing check
+        if check_google_safe_browsing(final_url):
+            score += 50
+            reasons.append("Google Safe Browsing flagged this URL as dangerous")
 
 
 
-        # Punycode detection (homograph attack)
-        if domain.startswith("xn--"):
-            score += 40
-            reasons.append("Punycode domain detected (possible homograph attack)")
 
-        
+        # PhishTank check
+        if check_phishtank(final_url):
+            score+=50
+            reasons.append("URL found in PhishTank phishing database")
 
-        domain_name = domain + "." + suffix
+        domain_info=tldextract.extract(final_url)
+        domain=domain_info.domain
+        suffix=domain_info.suffix
 
+        domain_name=domain+"."+suffix
 
+        # Entropy
+        entropy=calculate_entropy(domain)
+        if entropy>3.5:
+            score+=30
+            reasons.append("Domain has high entropy")
 
-        # Domain popularity check
+        # Domain popularity
         if domain_name not in popular_domains:
-            score += 10
+            score+=10
             reasons.append("Domain not in popular domain list")
 
-
-
-        # Brand impersonation detection
+        # Brand impersonation
         for brand in target_brands:
             if brand in domain.lower():
-                score += 35
-                reasons.append("Possible brand impersonation detected: " + brand)
+                score+=35
+                reasons.append("Brand impersonation detected: "+brand)
 
-        age = get_domain_age(domain_name)
+        # Domain age
+        age=get_domain_age(domain_name)
+        if age is not None and age<30:
+            score+=40
+            reasons.append("Domain very new (<30 days)")
 
-        if age is not None and age < 30:
-            score += 40
-            reasons.append("Domain is very new (less than 30 days old): " + domain_name)
+        reasons.append("Detected domain: "+domain_name)
 
-        full_domain = domain + "." + suffix
-        reasons.append("Detected domain: " + full_domain)
+        # ML detection
+        if ml_detect(final_url)==1:
+            score+=40
+            reasons.append("ML model detected phishing")
 
-
-
-
-
-        # Levenshtein brand similarity detection
-        # Levenshtein brand similarity detection
-
-        domain_parts = domain.split("-")
-        for part in domain_parts:
-            for brand in target_brands:
-                distance = levenshtein_distance(part.lower(), brand)
-                if distance > 0 and distance <= 2:
-                    score += 35
-                    reasons.append("Domain very similar to brand (possible typosquatting): " + brand)
-                    break
-
-
-
-        # Digit ratio detection
-        digit_count = sum(c.isdigit() for c in domain)
-
-        digit_ratio = digit_count / len(domain)
-        if digit_ratio > 0.3:
-            score += 25
-            reasons.append("Domain contains many digits (possible phishing)")
-        
-
-
-
-        # Suspicious TLD detection
-        if suffix in suspicious_tlds:
-            score += 35
-            reasons.append("Suspicious domain extension detected: ." + suffix)
-
-        # Short URL detection
-        for short in short_url_services:
-            if short in url:
-                score += 30
-                reasons.append("Shortened URL detected: " + url)
-
-        # Suspicious domain word detection
-        for word in suspicious_domain_words:
-            if word in url:
-                score += 25
-                reasons.append("Suspicious word in URL: " + word)
-
-
-        # Detect IP address URLs
-        ip_pattern = r'http[s]?://\d+\.\d+\.\d+\.\d+'
-
-        if re.match(ip_pattern, url):
-            score += 40
-            reasons.append("URL uses IP address instead of domain")
-
-
-        # Detect excessive hyphens
-        if domain.count("-") >= 3:
-            score += 30
-            reasons.append("Domain contains excessive hyphens (possible phishing)")
-
-
-        # Detect very long domains
-        if len(domain) > 25:
-            score += 25
-            reasons.append("Domain name unusually long")
-
-        # Detect suspicious subdomain tricks
-        if domain_info.subdomain:
-            if any(brand in domain_info.subdomain for brand in target_brands):
-                score += 35
-                reasons.append("Brand name used in subdomain (possible phishing)")
-
-
-
-        # URL encoding detection
-        if re.search(r'%[0-9a-fA-F]{2}', url):
-            score += 30
-            reasons.append("Encoded characters detected in URL (possible obfuscation)")
-
-
-
-
-        # Machine learning phishing detection
-        ml_result = ml_detect(url)
-        
-        if ml_result == 1:
-            score += 40
-            reasons.append("Machine learning model detected phishing URL")
-
-
-
-
-        # Subdomain depth detection
-        subdomain_parts = domain_info.subdomain.split(".")
-        if len(subdomain_parts) > 3:
-            score += 30
-            reasons.append("Too many subdomains detected (possible phishing)")
-
-
-        
-
-        # Redirect chain detection
+        # DNS check
         try:
-            response = requests.get(url, allow_redirects=True, timeout=3)
-            redirect_count = len(response.history)
-            if redirect_count > 2:
-                score += 30
-                reasons.append("URL redirects multiple times (possible phishing)")
+            dns.resolver.resolve(domain_name,"A")
         except:
-            pass
+            score+=25
+            reasons.append("DNS lookup failed")
+
+    if score>100:
+        score=100
+
+    return score,reasons
 
 
 
-
-        # URL parameter count detection
-        if "?" in url:
-            params = url.split("?")[1]
-            param_count = params.count("&") + 1
-            if param_count > 3:
-                score += 20
-                reasons.append("URL contains many query parameters")
-
-
-        
-
-        # DNS record analysis
-        try:
-            answers = dns.resolver.resolve(domain_name, "A")
-            if not answers:
-                score += 20
-                reasons.append("Domain has no A record")
-        except:
-            score += 25
-            reasons.append("DNS lookup failed for domain")
-
-
-
-
-        # Dot count detection
-        dot_count = url.count(".")
-        if dot_count > 5:
-            score += 20
-            reasons.append("URL contains excessive dots (possible phishing)")
-
-
-
-
-
-
-    # Cap score
-    if score > 100:
-        score = 100
-
-    return score, reasons
+# print(get_domain_age("google.com"))  
