@@ -89,6 +89,58 @@ def load_scam_patterns():
 
 scam_patterns = load_scam_patterns()
 
+
+
+
+
+
+
+
+
+
+# ----------------------------
+# Load URLhaus database
+# ----------------------------
+
+def load_urlhaus():
+
+    urlhaus_set = set()
+
+    file_path = os.path.join(base_dir, "data", "urlhaus.csv")
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+
+            for line in f:
+
+                # Skip comments
+                if line.startswith("#"):
+                    continue
+
+                parts = line.split(",")
+
+                # URL is 3rd column (index 2)
+                if len(parts) > 2:
+                    url = parts[2].strip().strip('"')
+                    urlhaus_set.add(url)
+
+    except:
+        print("URLhaus dataset not found")
+
+    return urlhaus_set
+
+
+# Load once
+urlhaus_db = load_urlhaus()
+
+
+
+
+
+
+
+
+
 # ----------------------------
 # Jaccard similarity
 # ----------------------------
@@ -317,6 +369,36 @@ def check_google_safe_browsing(url):
 
 
 
+def check_urlhaus(url):
+
+    api_url = "https://urlhaus-api.abuse.ch/v1/url/"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json"
+    }
+
+    payload = {
+        "url": url
+    }
+
+    try:
+        response = requests.post(api_url, headers=headers, data=payload, timeout=5)
+
+        result = response.json()
+
+        print("URLhaus response:", result)  # DEBUG
+
+        if result.get("query_status") == "ok":
+            return True
+
+    except Exception as e:
+        print("URLhaus error:", e)
+
+    return False
+
+
+
 
 # ----------------------------
 # MAIN DETECTION FUNCTION
@@ -324,114 +406,114 @@ def check_google_safe_browsing(url):
 
 def analyze_message(message):
 
-    score=0
-    reasons=[]
+    score = 0
+    reasons = []
 
-    text=message.lower()
+    text = message.lower()
 
     # Keyword detection
     for word in suspicious_keywords:
         if word in text:
-            score+=20
-            reasons.append("Suspicious keyword detected: "+word)
+            score += 20
+            reasons.append("Suspicious keyword detected: " + word)
 
     # Pattern detection
-    pattern_matched=False
+    pattern_matched = False
 
     for pattern in scam_patterns:
-
         if pattern in text:
-            score+=40
-            reasons.append("Matched known scam pattern: "+pattern)
-            pattern_matched=True
+            score += 40
+            reasons.append("Matched known scam pattern: " + pattern)
+            pattern_matched = True
             break
 
     # Similarity detection
     if not pattern_matched:
-
         for pattern in scam_patterns:
-
-            similarity=jaccard_similarity(text,pattern)
-
-            if similarity>0.3:
-                score+=30
-                reasons.append("Message similar to scam pattern: "+pattern)
+            similarity = jaccard_similarity(text, pattern)
+            if similarity > 0.3:
+                score += 30
+                reasons.append("Message similar to scam pattern: " + pattern)
                 break
 
     # URL extraction
-    urls=re.findall(r'https?://\S+',text)
+    urls = re.findall(r'https?://\S+', text)
 
     if urls:
-        score+=20
+        score += 20
         reasons.append("Message contains external link")
 
     # URL analysis
     for url in urls:
 
-        final_url=resolve_final_url(url)
+        final_url = resolve_final_url(url)
+        clean_url = final_url.rstrip("/")
 
-
-        # Google Safe Browsing check
+        # Google Safe Browsing
         if check_google_safe_browsing(final_url):
             score += 50
             reasons.append("Google Safe Browsing flagged this URL as dangerous")
 
-
-
-
-        # PhishTank check
+        # PhishTank
         if check_phishtank(final_url):
-            score+=50
+            score += 50
             reasons.append("URL found in PhishTank phishing database")
 
-        domain_info=tldextract.extract(final_url)
-        domain=domain_info.domain
-        suffix=domain_info.suffix
+        # URLhaus (CSV ONLY)
+        if clean_url in urlhaus_db:
+            score += 50
+            reasons.append("URL found in URLhaus malware database")
 
-        domain_name=domain+"."+suffix
+        # Domain extraction
+        domain_info = tldextract.extract(final_url)
+        domain = domain_info.domain
+        suffix = domain_info.suffix
+
+        domain_name = domain + "." + suffix
 
         # Entropy
-        entropy=calculate_entropy(domain)
-        if entropy>3.5:
-            score+=30
+        entropy = calculate_entropy(domain)
+        if entropy > 3.5:
+            score += 30
             reasons.append("Domain has high entropy")
 
         # Domain popularity
         if domain_name not in popular_domains:
-            score+=10
+            score += 10
             reasons.append("Domain not in popular domain list")
 
         # Brand impersonation
         for brand in target_brands:
             if brand in domain.lower():
-                score+=35
-                reasons.append("Brand impersonation detected: "+brand)
+                score += 35
+                reasons.append("Brand impersonation detected: " + brand)
 
         # Domain age
-        age=get_domain_age(domain_name)
-        if age is not None and age<30:
-            score+=40
+        age = get_domain_age(domain_name)
+        if age is not None and age < 30:
+            score += 40
             reasons.append("Domain very new (<30 days)")
 
-        reasons.append("Detected domain: "+domain_name)
+        reasons.append("Detected domain: " + domain_name)
 
         # ML detection
-        if ml_detect(final_url)==1:
-            score+=40
+        if ml_detect(final_url) == 1:
+            score += 40
             reasons.append("ML model detected phishing")
 
         # DNS check
         try:
-            dns.resolver.resolve(domain_name,"A")
+            dns.resolver.resolve(domain_name, "A")
         except:
-            score+=25
+            score += 25
             reasons.append("DNS lookup failed")
 
-    if score>100:
-        score=100
+    if score > 100:
+        score = 100
 
-    return score,reasons
+    return score, reasons
 
 
+print("Total URLhaus entries:", len(urlhaus_db))
 
-# print(get_domain_age("google.com"))  
+    # print(get_domain_age("google.com"))
