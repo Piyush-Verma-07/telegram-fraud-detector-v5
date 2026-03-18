@@ -400,6 +400,83 @@ def check_urlhaus(url):
 
 
 
+
+
+
+
+
+
+def check_abuseipdb(ip):
+
+    API_KEY = "9e9c72067b88af9d60f3618d3a1d02a4866be923ad5e8a640b70a3739c7f901eeb050d08e425303c"
+
+    url = "https://api.abuseipdb.com/api/v2/check"
+
+    headers = {
+        "Key": API_KEY,
+        "Accept": "application/json"
+    }
+
+    params = {
+        "ipAddress": ip,
+        "maxAgeInDays": 90
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=5)
+        data = response.json()
+
+        abuse_score = data["data"]["abuseConfidenceScore"]
+
+        if abuse_score > 50:
+            return True, abuse_score
+
+    except:
+        pass
+
+    return False, 0
+
+
+
+
+
+
+
+
+def load_threatfox():
+
+    threatfox_set = set()
+
+    file_path = os.path.join(base_dir, "data", "threatfox.json")
+
+    try:
+        import json
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+            # Loop through dictionary values
+            for key in data:
+                entries = data[key]
+
+                for item in entries:
+                    ioc = item.get("ioc_value")
+
+                    if ioc:
+                        threatfox_set.add(ioc.strip())
+
+        print("Total ThreatFox entries:", len(threatfox_set))
+
+    except Exception as e:
+        print("ThreatFox dataset error:", e)
+
+    return threatfox_set
+threatfox_db = load_threatfox()
+
+
+
+
+
 # ----------------------------
 # MAIN DETECTION FUNCTION
 # ----------------------------
@@ -463,6 +540,14 @@ def analyze_message(message):
         if clean_url in urlhaus_db:
             score += 50
             reasons.append("URL found in URLhaus malware database")
+        
+
+
+
+        # ThreatFox API (only if not found in DB)
+        # if domain_name in threatfox_db:
+            # score += 50
+            # reasons.append("Domain found in ThreatFox database")
 
         # Domain extraction
         domain_info = tldextract.extract(final_url)
@@ -470,6 +555,33 @@ def analyze_message(message):
         suffix = domain_info.suffix
 
         domain_name = domain + "." + suffix
+
+
+
+
+        # ThreatFox API (only if not found in DB)
+        if domain_name in threatfox_db or final_url in threatfox_db:
+            score += 50
+            reasons.append("Found in ThreatFox database")
+
+
+
+
+        # Get IP from domain
+        try:
+            ip = dns.resolver.resolve(domain_name, "A")[0].to_text()
+        except:
+            ip = None
+        
+
+        if ip:
+            is_bad, score_ip = check_abuseipdb(ip)
+        if is_bad:
+            score += 40
+            reasons.append(f"IP reported malicious (AbuseIPDB score: {score_ip})")
+
+
+
 
         # Entropy
         entropy = calculate_entropy(domain)
