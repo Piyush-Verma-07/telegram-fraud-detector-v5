@@ -6,6 +6,7 @@ import joblib
 import dns.resolver
 from datetime import datetime
 import math
+from urllib.parse import unquote
 from collections import Counter
 
 # ----------------------------
@@ -258,12 +259,17 @@ def levenshtein_distance(a,b):
 # ----------------------------
 
 def resolve_final_url(url):
-
     try:
-        response=requests.get(url,allow_redirects=True,timeout=5)
-        return response.url
+        response = requests.get(url, allow_redirects=True, timeout=5)
+
+        # If there is redirect history → it redirected
+        if response.history:
+            return response.url, True
+
+        return response.url, False
+
     except:
-        return url
+        return url, False
 
 # ----------------------------
 # PhishTank API check
@@ -320,6 +326,39 @@ def ml_detect(url):
 
 
 
+
+
+# ----------------------------
+# Load OpenPhish Feed
+# ----------------------------
+
+def load_openphish():
+    
+    openphish_set = set()
+    
+    file_path = os.path.join(base_dir, "data", "openphish.txt")
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                url = line.strip().lower()
+                # Normalize URL (same as detection)
+                url = url.replace("https://", "").replace("http://", "")
+                url = url.rstrip("/")
+
+                if url:
+                    openphish_set.add(url)
+    
+    except:
+        print("OpenPhish dataset not found")
+
+    return openphish_set
+
+
+# Load once
+openphish_db = load_openphish()
+
+print("Total OpenPhish entries:", len(openphish_db))
 
 
 
@@ -486,7 +525,8 @@ def analyze_message(message):
     score = 0
     reasons = []
 
-    text = message.lower()
+    decoded_message = unquote(message)
+    text = decoded_message.lower()
 
     # Keyword detection
     for word in suspicious_keywords:
@@ -513,17 +553,58 @@ def analyze_message(message):
                 reasons.append("Message similar to scam pattern: " + pattern)
                 break
 
+
+
+    
+
+    # URL Encoding Detection
+    if re.search(r'%[0-9a-fA-F]{2}', message):
+        score += 30
+        reasons.append("URL encoding detected (possible obfuscation)")
+
+
+
+
+    
+    print("\n[DEBUG] Processing message:", message)
+    print("[DEBUG] Decoded message:", decoded_message)
+
+
+
+
     # URL extraction
-    urls = re.findall(r'https?://\S+', text)
+    urls = re.findall(r'(https?://\S+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})', text)
+    # to remove duplicate
+    urls = list(set(urls))    
+    print("[DEBUG] Extracted URLs:", urls)
 
     if urls:
         score += 20
-        reasons.append("Message contains external link")
+        reasons.append("Message contains URL or domain")
+
+
+
+    
+    # ----------------------------
+# Hidden URL Detection
+# ----------------------------
+
+# Extract visible domains from text
+    visible_domains = re.findall(r'(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}', text)
+    print("[DEBUG] Visible domains:", visible_domains)
+
 
     # URL analysis
     for url in urls:
 
-        final_url = resolve_final_url(url)
+        decoded_url = unquote(url)
+        # if url redirected
+        final_url, redirected = resolve_final_url(decoded_url)
+        if redirected:
+            score += 20
+            reasons.append("URL uses redirection (possible phishing)")
+
+
         clean_url = final_url.rstrip("/")
 
         # Google Safe Browsing
@@ -537,7 +618,7 @@ def analyze_message(message):
             reasons.append("URL found in PhishTank phishing database")
 
         # URLhaus (CSV ONLY)
-        if clean_url in urlhaus_db:
+        if clean_url.rstrip("/") in urlhaus_db:
             score += 50
             reasons.append("URL found in URLhaus malware database")
         
@@ -554,7 +635,65 @@ def analyze_message(message):
         domain = domain_info.domain
         suffix = domain_info.suffix
 
+
+
         domain_name = domain + "." + suffix
+
+
+
+
+
+
+
+        # ----------------------------
+# Short URL Detection (ADD HERE)
+# ----------------------------
+
+        if domain_name in short_url_services:
+            score += 20
+            reasons.append("Shortened URL detected (possible hiding of destination)")
+
+        
+        
+
+
+
+        # ----------------------------
+# IP Address Detection (NEW)
+# ----------------------------
+
+        ip_pattern = r'\b\d{1,3}(\.\d{1,3}){3}\b'
+
+        if re.search(ip_pattern, final_url):
+            score += 40
+            reasons.append("URL uses IP address instead of domain")
+
+
+
+        
+
+
+
+        # Levenshtein Brand Detection (Typosquatting)
+        # Levenshtein Brand Detection (FIXED)
+
+        for brand in target_brands:
+            parts = re.split(r'[-.]', domain)
+            for part in parts:
+
+        # Ignore very small words (IMPORTANT FIX)
+                if len(part) < 4:
+                    continue
+
+                distance = levenshtein_distance(part, brand)
+
+        # Only trigger if:
+        # 1. distance small
+        # 2. length similar (avoid bit vs sbi issue)
+                if 0 < distance <= 2 and abs(len(part) - len(brand)) <= 1:
+                        score += 35
+                        reasons.append(f"Possible typosquatting of brand: {brand}")
+                        break
 
 
 
@@ -566,19 +705,67 @@ def analyze_message(message):
 
 
 
+        
+        # ----------------------------
+# ----------------------------
+# OpenPhish Check (FIXED)
+# ----------------------------
 
-        # Get IP from domain
+# Normalize URL
+        clean_url = final_url.lower()
+
+# Remove protocol
+        clean_url = clean_url.replace("https://", "").replace("http://", "")
+
+# Remove trailing slash
+        clean_url = clean_url.rstrip("/")
+
+# Extract only domain
+        domain_only = clean_url.split("/")[0]
+
+# Check multiple formats
+        if (clean_url in openphish_db or domain_only in openphish_db):
+            score += 50
+            reasons.append("URL found in OpenPhish phishing database")
+
+
+
+
+        # Get IP from domain DNS CHECK
         try:
             ip = dns.resolver.resolve(domain_name, "A")[0].to_text()
         except:
             ip = None
+            score += 25
+            reasons.append("DNS lookup failed")
         
 
+        is_bad = False
+        score_ip = 0
         if ip:
             is_bad, score_ip = check_abuseipdb(ip)
-        if is_bad:
-            score += 40
-            reasons.append(f"IP reported malicious (AbuseIPDB score: {score_ip})")
+            if is_bad:
+                score += 40
+                reasons.append(f"IP reported malicious (AbuseIPDB score: {score_ip})")
+
+
+        
+
+
+
+        # Hidden URL detection (FIXED - no duplicates)
+
+        hidden_flag = False
+
+        for visible in visible_domains:
+            if visible not in final_url:
+                hidden_flag = True
+                break
+
+        if hidden_flag:
+            score += 25
+            reasons.append("Hidden URL mismatch detected")
+
 
 
 
@@ -596,7 +783,7 @@ def analyze_message(message):
 
         # Brand impersonation
         for brand in target_brands:
-            if brand in domain.lower():
+            if brand in domain.lower() and domain.lower() != brand:
                 score += 35
                 reasons.append("Brand impersonation detected: " + brand)
 
@@ -613,12 +800,80 @@ def analyze_message(message):
             score += 40
             reasons.append("ML model detected phishing")
 
-        # DNS check
-        try:
-            dns.resolver.resolve(domain_name, "A")
-        except:
+
+
+
+        # ----------------------------
+# Long URL Detection
+# ----------------------------
+
+        if len(final_url) > 75:
+            score += 20
+            reasons.append("URL is unusually too long")
+
+
+
+
+        # ----------------------------
+# Too Many Dots Detection
+# ----------------------------
+
+        dot_count = final_url.count(".")
+        if dot_count > 4:
+            score += 20
+            reasons.append("Too many dots in URL (possible subdomain trick)")
+
+
+
+
+        # ----------------------------
+# Subdomain Depth Detection
+# ----------------------------
+
+        subdomain = domain_info.subdomain
+        if subdomain.count(".") > 2:
             score += 25
-            reasons.append("DNS lookup failed")
+            reasons.append("Too many subdomains (phishing pattern)")
+
+
+
+        # ----------------------------
+# Hyphen Count Detection
+# ----------------------------
+
+        if final_url.count("-") > 3:
+            score += 20
+            reasons.append("Too many hyphens in URL")
+
+
+
+
+
+        # ----------------------------
+# Digit Ratio Detection
+# ----------------------------
+
+        digits = sum(c.isdigit() for c in final_url)
+        if digits > 5:
+            score += 20
+            reasons.append("Too many numbers in URL")
+
+
+
+
+        print("[DEBUG] URL detected:", final_url)
+        print("[DEBUG] Domain:", domain_name)
+
+
+
+
+
+        # # DNS check
+        # try:
+        #     dns.resolver.resolve(domain_name, "A")
+        # except:
+        #     score += 25
+        #     reasons.append("DNS lookup failed")
 
     if score > 100:
         score = 100
@@ -628,4 +883,4 @@ def analyze_message(message):
 
 print("Total URLhaus entries:", len(urlhaus_db))
 
-    # print(get_domain_age("google.com"))
+# print(get_domain_age("google.com"))
